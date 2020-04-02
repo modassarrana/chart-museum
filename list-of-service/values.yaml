@@ -1,0 +1,54 @@
+# Default values for getuptime.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+replicaCount: 1
+image:
+  repository: nginx
+  tag: stable
+  pullPolicy: IfNotPresent
+namespace: default
+domain: "faas.nrst.nbnco.lab"
+deployment:
+  name: service-list-dep
+  labels:
+    version: v1
+service:
+  servicename: service-list
+  prefix: "/list"
+  port: 5000
+  targetport: 5000
+  env:
+    # Does Knative application requires environment variable , if yes the set defined as true , else false
+    defined: false
+    list:
+      - key: Target
+        value: "hello world"
+
+virtualservice:
+  name: service-list-virtualservice
+
+# For istio service , gateway is must
+gateway:
+  name: service-list-gateway
+
+# if service account is required , change create to true. By default it is false
+serviceaccount:
+  create: true
+  name: service-list-account
+clusterrole:
+  name: service-list-cr
+crb:
+  name: service-list-crb
+
+
+# This is required for local persistant storage. If your cluster
+# does not allow this, try setting securityContext: {}
+securityContext:
+  fsGroup: 0
+  runAsUser: 0
+  runAsGroup: 0
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+

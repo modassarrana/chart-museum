@@ -1,0 +1,122 @@
+def getServiceUrl() {
+    def serviceIP
+    def servicePort
+    // Fetch service type to generate url
+    def serviceType = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.spec.type}'", returnStdout: true)
+    echo "$serviceType"
+    // Set URL based on service type
+    if ("$serviceType" == 'LoadBalancer') {
+        echo 'ServiceType is Loadbalncer'
+        serviceIP = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true )
+        servicePort = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.spec.ports[0].port}'", returnStdout: true)
+    } else {
+        echo "service Type is NodePort"
+        //  podName = sh(script: "kubectl get pod -n chart-museum -o name | grep new-chartmuseum | awk -F\"/\" '{print \$2}'", returnStdout: true).trim()
+        serviceIP = sh(script: "kubectl get nodes --namespace chart-museum -o jsonpath='{.items[0].status.addresses[0].address}'", returnStdout: true )
+        servicePort = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.spec.ports[0].nodePort}'", returnStdout: true)
+    }
+    def url = "http://$serviceIP:$servicePort"
+    return url
+}
+
+def checkVer(app_name){
+    sh "helm repo update"
+    //Fetch version from repo data 
+	def ver = sh (script: "helm search | grep 'cm/' | grep ${app_name}| awk -F ' ' '{print \$2}'",returnStdout: true).trim()
+	echo "$ver"
+    def chart_version = sh ( script: "cd ${app_name}; cat Chart.yaml  | grep version | cut -d ':' -f2",returnStdout: true).trim()
+    echo "$chart_version"
+    if ( "$ver" =~ "$chart_version" )
+	{
+		return 'True'
+	}
+	else {
+		return 'False'
+	}  
+}
+
+def pushToRepo(BASEURL,app_name) {
+	sh 'apk add git'
+	sh 'apk add curl'
+	sh "cd ${app_name} ; helm package ."
+    def appVer = sh(script: "cd ${app_name}/ ; ls -lrt | grep -o *.tgz ", returnStdout: true).trim()
+    echo "application [ $app_name ] chart version: $appVer"
+    withCredentials([usernamePassword(credentialsId: 'chart-museum-cred', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+        //Push Node-red application package
+        sh "cd ${app_name}/ ; curl -u ${USERNAME}:${PASSWORD} --data-binary @${appVer} ${BASEURL}/api/charts"
+    }
+}
+podTemplate(
+    label: 'mypod',
+    inheritFrom: 'default',
+    serviceAccount: 'test',
+    containers: [
+        containerTemplate(
+            name: 'helm',
+            image: 'lachlanevenson/k8s-helm:v2.13.0',
+            ttyEnabled: true,
+            command: 'cat'
+        ),
+        containerTemplate(
+            name: 'kubectl',
+            image: 'lachlanevenson/k8s-kubectl:v1.15.6',
+            ttyEnabled: true,
+            command: 'cat'
+        )
+    ],
+    volumes:[
+        hostPathVolume(mountPath: '/var/run/docker.sock', hostPath: '/var/run/docker.sock'),
+    ]
+) {
+    node('mypod') 
+        {
+            def commitId
+            def BASEURL
+            //def app_name
+            stage('Extract'){
+                checkout scm
+                commitId = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            }
+            stage('Fetch chart-musuem service url') {
+                container('kubectl'){
+                    //get chart-museum service url
+                    BASEURL = getServiceUrl()
+                }
+            }
+            stage('pushAppToRepo') {
+                container('helm') {
+                   
+                    sh "helm init --client-only --skip-refresh"
+                    // add helm repo
+                    withCredentials([usernamePassword(credentialsId: 'chart-museum-cred', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                        //add NR chartmusuem
+                        sh "helm repo add --username ${USERNAME} --password ${PASSWORD}  cm ${BASEURL}"
+                    }
+		            // update Repo & fetch any application is stored in it
+                    sh "helm repo update"
+                    def repoData = sh(script: "helm search | grep 'cm/'", returnStdout: true)
+                    echo "$repoData"
+		            // Check chartmuseum is empty or not
+		            if ( "$repoData" == " "  ) {
+		                echo "chart-museum repo doesnot contain any data"
+			            // Push application chart to repo
+			            pushToRepo(BASEURL,app_name)
+			            sh "helm repo update"
+		            }
+		            else {
+		                // validate application chart version & repo data version is same
+		                def status = checkVer(app_name)
+                        if ("$status" == 'True') { 
+		                    echo " version in helm chart is same as in application stored in chart-museum repo "
+		                }
+		                else {
+		                    // push latest application chart to repo
+		                    pushToRepo(BASEURL,app_name)
+		                    sh "helm repo update"
+                        }
+		            }
+                    
+                }
+            }
+        }
+}

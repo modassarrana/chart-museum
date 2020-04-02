@@ -1,0 +1,96 @@
+def getServiceUrl() {
+    def serviceIP
+    def servicePort
+    // Fetch service type to generate url
+    def serviceType = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.spec.type}'", returnStdout: true)
+    echo "$serviceType"
+    // Set URL based on service type
+    if ("$serviceType" == 'LoadBalancer') {
+        echo 'ServiceType is Loadbalncer'
+        serviceIP = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'", returnStdout: true )
+        servicePort = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.spec.ports[0].port}'", returnStdout: true)
+    } else {
+        echo "service Type is NodePort"
+        //  podName = sh(script: "kubectl get pod -n chart-museum -o name | grep new-chartmuseum | awk -F\"/\" '{print \$2}'", returnStdout: true).trim()
+        serviceIP = sh(script: "kubectl get nodes --namespace chart-museum -o jsonpath='{.items[0].status.addresses[0].address}'", returnStdout: true )
+        servicePort = sh(script: "kubectl get svc new-chartmuseum --namespace chart-museum  -o jsonpath='{.spec.ports[0].nodePort}'", returnStdout: true)
+    }
+    def url = "http://$serviceIP:$servicePort"
+    return url
+}
+
+
+def pushAllToRepo(BASEURL, USERNAME , PASSWORD) {
+	sh 'apk add git'
+	sh 'apk add curl'
+        def appVer
+        def dirCon = []
+        //List all directories under the current workspace
+        dirCon = sh(script: "cd ${WORKSPACE} ; ls -l | grep ^d |  awk '{print \$9}'",returnStdout: true).trim().split("\n")
+	// traverse through all the directory
+        for (app_name in dirCon) {
+            echo "application [$app_name]"
+            // check directory should not be chart-museum
+	    if ( "$app_name" != "chart-museum") {
+                 sh "cd ${app_name} ; helm package ."
+                 appVer = sh(script: "cd ${app_name}/ ; ls -lrt | grep -o *.tgz ", returnStdout: true).trim()
+                 sh "cd ${app_name}/ ; curl -u ${USERNAME}:${PASSWORD} --data-binary @${appVer} ${BASEURL}/api/charts"
+	    }
+	}
+}
+podTemplate(
+    label: 'mypod',
+    inheritFrom: 'default',
+    serviceAccount: 'test',
+    containers: [
+        containerTemplate(
+            name: 'helm',
+            image: 'lachlanevenson/k8s-helm:v2.13.0',
+            ttyEnabled: true,
+            command: 'cat'
+        ),
+        containerTemplate(
+            name: 'kubectl',
+            image: 'lachlanevenson/k8s-kubectl:v1.15.6',
+            ttyEnabled: true,
+            command: 'cat'
+        )
+    ],
+    volumes:[
+        hostPathVolume(mountPath: '/var/run/docker.sock', hostPath: '/var/run/docker.sock'),
+    ]
+) {
+    node('mypod') 
+        {
+            def commitId
+            def BASEURL
+            //def app_name
+            stage('Extract'){
+                checkout scm
+                commitId = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+            }
+            stage('Fetch chart-musuem service url') {
+                container('kubectl'){
+                    //get chart-museum service url
+                    BASEURL = getServiceUrl()
+                }
+            }
+            stage('pushAppToRepo') {
+                container('helm') {
+                   
+                    sh "helm init --client-only --skip-refresh"
+                    // add helm repo
+                    withCredentials([usernamePassword(credentialsId: 'chart-museum-cred', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                        //add NR chartmusuem
+                        sh "helm repo add --username ${USERNAME} --password ${PASSWORD}  cm ${BASEURL}"
+			// Push All application chart to repo
+                         pushAllToRepo(BASEURL,USERNAME,PASSWORD)
+                    }
+		    // update Repo 
+                    sh "helm repo update"
+		}
+                    
+            }
+        }
+}
+

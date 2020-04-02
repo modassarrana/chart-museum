@@ -1,0 +1,19 @@
+apiVersion: serving.knative.dev/v1alpha1 # Current version of Knative
+kind: Service
+metadata:
+  name: {{ .Values.service.servicename }}
+  namespace: {{ .Values.namespace }} # The namespace the app will use
+spec:
+  template:
+    spec:
+      containers:
+        - image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.service.env.defined }}
+          env:
+          {{- range .Values.service.env.list }}
+            - name: {{ .key }}
+              value: {{ .value }}
+	  {{- end }}
+          {{- end }}
+

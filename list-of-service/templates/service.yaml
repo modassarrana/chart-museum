@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{.Values.service.servicename }}
+  labels:
+    app: {{.Values.service.servicename }}
+spec:
+  ports:
+  - port: {{ .Values.service.port }}
+    name: http
+    targetPort: {{ .Values.service.targetport }}
+  selector:
+    app: {{.Values.service.servicename }}
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: {{.Values.deployment.name }}
+  labels:
+    version: {{.Values.deployment.labels.version}}
+spec:
+  replicas: {{.Values.replicaCount}}
+  selector:
+    matchLabels:
+      app: {{.Values.service.servicename }}
+      version: {{.Values.deployment.labels.version}}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.service.servicename }}
+        version: {{.Values.deployment.labels.version}}
+    spec:
+      {{- if .Values.serviceaccount.create }}
+      serviceAccountName: {{.Values.serviceaccount.name }}
+      {{- end }}
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
